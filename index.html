@@ -5,7 +5,54 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Language Translation Explorer</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <body class="min-h-screen flex flex-col items-center p-4 sm:p-8">
+    <style>
+      body {
+        font-family: "Inter", sans-serif;
+        background-color: #faf8f5;
+      }
+      .card {
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1),
+          0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        transition: transform 0.2s, box-shadow 0.2s;
+      }
+      .btn-primary {
+        transition: background-color 0.2s, transform 0.1s;
+      }
+      .btn-primary:hover {
+        transform: translateY(-1px);
+      }
+      .btn-icon {
+        transition: background-color 0.2s;
+      }
+      .btn-icon:hover {
+        background-color: #e5e7eb;
+      }
+      textarea,
+      select {
+        resize: none;
+        transition: border-color 0.2s;
+      }
+      textarea:focus,
+      select:focus {
+        border-color: #d97706;
+        outline: none;
+      }
+    </style>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: "#d97706",
+              secondary: "#059669",
+              accent: "#dc2626",
+            },
+          },
+        },
+      };
+    </script>
+  </head>
+  <body class="min-h-screen flex flex-col items-center p-4 sm:p-8">
     <!-- Header -->
     <header class="w-full max-w-4xl mb-8">
       <h1 class="text-4xl font-extrabold text-gray-900 text-center">
@@ -177,3 +224,494 @@
     </main>
 
     <script>
+      // --- 1. CONFIGURATION AND INITIALIZATION ---
+
+      // MyMemory API base URL (Free Tier)
+      const API_BASE_URL = "https://api.mymemory.translated.net/get?q=";
+      const LOCAL_STORAGE_KEY = "translationExplorerRecent";
+
+      // Defined languages for dropdowns
+      const LANGUAGES = [
+        { code: "en", name: "English" },
+        { code: "fr", name: "French" },
+        { code: "rw", name: "Kinyarwanda (Fallback Test)" },
+        { code: "es", name: "Spanish" },
+        { code: "de", name: "German" },
+      ];
+
+      // Fallback JSON Dictionary (as a JS constant)
+      const FALLBACK_DICTIONARY = {
+        en: {
+          fr: { hello: "bonjour", love: "amour", peace: "paix" },
+          rw: { hello: "muraho", love: "urukundo", peace: "amahoro" },
+        },
+        rw: {
+          en: { muraho: "hello", urukundo: "love", amahoro: "peace" },
+          fr: { muraho: "bonjour" },
+        },
+      };
+
+      // UI Element References
+      const elements = {
+        sourceText: document.getElementById("sourceText"),
+        targetText: document.getElementById("targetText"),
+        sourceLang: document.getElementById("sourceLang"),
+        targetLang: document.getElementById("targetLang"),
+        translateBtn: document.getElementById("translateBtn"),
+        swapBtn: document.getElementById("swapBtn"),
+        copyBtn: document.getElementById("copyBtn"),
+        speakBtn: document.getElementById("speakBtn"),
+        statusMessage: document.getElementById("statusMessage"),
+        recentTranslations: document.getElementById("recentTranslations"),
+        noRecentText: document.getElementById("noRecentText"),
+      };
+
+      let isTranslating = false;
+
+      // --- 2. CORE LOGIC FUNCTIONS ---
+
+      /**
+       * Clears and populates the language dropdowns.
+       */
+      function populateLanguageSelectors() {
+        LANGUAGES.forEach((lang) => {
+          const sourceOption = new Option(lang.name, lang.code);
+          const targetOption = new Option(lang.name, lang.code);
+
+          elements.sourceLang.add(sourceOption);
+          elements.targetLang.add(targetOption);
+        });
+
+        // Set default languages
+        elements.sourceLang.value = "en";
+        elements.targetLang.value = "fr";
+      }
+
+      /**
+       * Sets a status message in the UI.
+       * @param {string} message - The message text.
+       * @param {string} type - 'success', 'error', 'info'.
+       */
+      function setStatusMessage(message, type = "info") {
+        elements.statusMessage.textContent = message;
+        elements.statusMessage.classList.remove(
+          "hidden",
+          "bg-red-100",
+          "text-red-800",
+          "bg-green-100",
+          "text-green-800",
+          "bg-yellow-100",
+          "text-yellow-800"
+        );
+
+        switch (type) {
+          case "error":
+            elements.statusMessage.classList.add("bg-red-100", "text-red-800");
+            break;
+          case "success":
+            elements.statusMessage.classList.add(
+              "bg-green-100",
+              "text-green-800"
+            );
+            break;
+          case "info":
+          default:
+            elements.statusMessage.classList.add(
+              "bg-yellow-100",
+              "text-yellow-800"
+            );
+            break;
+        }
+        elements.statusMessage.classList.remove("hidden");
+      }
+
+      /**
+       * Hides the status message.
+       */
+      function hideStatusMessage() {
+        elements.statusMessage.classList.add("hidden");
+      }
+
+      /**
+       * Attempts to translate using the local fallback dictionary.
+       * @param {string} sourceText - The text to translate (case insensitive).
+       * @param {string} sourceLang - The source language code.
+       * @param {string} targetLang - The target language code.
+       * @returns {string|null} The translated text or null if not found.
+       */
+      function getFallbackTranslation(sourceText, sourceLang, targetLang) {
+        const normalizedText = sourceText.toLowerCase().trim();
+
+        if (
+          FALLBACK_DICTIONARY[sourceLang] &&
+          FALLBACK_DICTIONARY[sourceLang][targetLang]
+        ) {
+          return (
+            FALLBACK_DICTIONARY[sourceLang][targetLang][normalizedText] || null
+          );
+        }
+        return null;
+      }
+
+      /**
+       * Fetches translation from the MyMemory API.
+       * @param {string} text - The text to translate.
+       * @param {string} sourceLang - The source language code.
+       * @param {string} targetLang - The target language code.
+       * @returns {Promise<string>} The translated text.
+       */
+      async function fetchTranslationFromAPI(text, sourceLang, targetLang) {
+        const langpair = `${sourceLang}|${targetLang}`;
+        const url = `${API_BASE_URL}${encodeURIComponent(
+          text
+        )}&langpair=${langpair}`;
+
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`API returned status ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        // Check if translation data is valid
+        if (
+          data &&
+          data.responseData &&
+          data.responseData.translatedText &&
+          data.responseData.translatedText !== text
+        ) {
+          // MyMemory sometimes returns an HTML encoded response, check for 'translatedText' property.
+          return data.responseData.translatedText.trim();
+        }
+
+        // If the API returns the original text, it likely failed to translate.
+        throw new Error(
+          "API could not perform translation or returned the original text."
+        );
+      }
+
+      /**
+       * Main translation handler: API first, then Fallback.
+       */
+      async function getTranslation() {
+        if (isTranslating) return;
+
+        const sourceText = elements.sourceText.value.trim();
+        const sourceLang = elements.sourceLang.value;
+        const targetLang = elements.targetLang.value;
+
+        if (!sourceText) {
+          setStatusMessage("Please enter text to translate.", "info");
+          return;
+        }
+
+        elements.targetText.value = "";
+        isTranslating = true;
+        elements.translateBtn.textContent = "Translating...";
+        elements.translateBtn.disabled = true;
+        hideStatusMessage();
+
+        try {
+          // 1. Attempt API Translation
+          const translatedText = await fetchTranslationFromAPI(
+            sourceText,
+            sourceLang,
+            targetLang
+          );
+          elements.targetText.value = translatedText;
+          setStatusMessage(
+            "Translation successful via MyMemory API.",
+            "success"
+          );
+          saveRecentTranslation(
+            sourceText,
+            translatedText,
+            sourceLang,
+            targetLang
+          );
+        } catch (apiError) {
+          console.error("API Error:", apiError);
+          setStatusMessage(
+            `API failed: ${apiError.message}. Trying local fallback...`,
+            "error"
+          );
+
+          // 2. Attempt Fallback Translation
+          const fallbackText = getFallbackTranslation(
+            sourceText,
+            sourceLang,
+            targetLang
+          );
+
+          if (fallbackText) {
+            elements.targetText.value = fallbackText;
+            setStatusMessage(
+              "Translation successful via local fallback dictionary.",
+              "info"
+            );
+            saveRecentTranslation(
+              sourceText,
+              fallbackText,
+              sourceLang,
+              targetLang,
+              true
+            );
+          } else {
+            elements.targetText.value = "---";
+            setStatusMessage(
+              "No offline translation available for this word/language pair.",
+              "error"
+            );
+          }
+        } finally {
+          isTranslating = false;
+          elements.translateBtn.innerHTML =
+            '<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg><span>Translate</span>';
+          elements.translateBtn.disabled = false;
+        }
+      }
+
+      // --- 3. UTILITY AND UI FUNCTIONS ---
+
+      /**
+       * Swaps the source and target languages in the dropdowns.
+       */
+      function swapLanguages() {
+        const source = elements.sourceLang.value;
+        const target = elements.targetLang.value;
+        const sourceText = elements.sourceText.value;
+        const targetText = elements.targetText.value;
+
+        elements.sourceLang.value = target;
+        elements.targetLang.value = source;
+
+        // Swap text content as well for better UX
+        elements.sourceText.value = targetText;
+        elements.targetText.value = sourceText;
+
+        setStatusMessage("Languages swapped.", "info");
+        setTimeout(hideStatusMessage, 2000);
+      }
+
+      /**
+       * Copies the translated text to the clipboard.
+       */
+      function copyToClipboard() {
+        const text = elements.targetText.value;
+        if (text && text !== "---") {
+          // Use document.execCommand for better compatibility in iframe environments
+          const textarea = document.createElement("textarea");
+          textarea.value = text;
+          document.body.appendChild(textarea);
+          textarea.select();
+          try {
+            document.execCommand("copy");
+            setStatusMessage("Translation copied to clipboard!", "success");
+            setTimeout(hideStatusMessage, 2000);
+          } catch (err) {
+            console.error("Copy failed:", err);
+            setStatusMessage(
+              "Failed to copy text. Please copy manually.",
+              "error"
+            );
+            setTimeout(hideStatusMessage, 3000);
+          }
+          document.body.removeChild(textarea);
+        }
+      }
+
+      /**
+       * Uses the Web Speech API to speak the translated text.
+       */
+      function speakTranslation() {
+        const text = elements.targetText.value;
+        const targetLang = elements.targetLang.value;
+
+        if (!text || text === "---") {
+          setStatusMessage("There is no translation to speak.", "info");
+          setTimeout(hideStatusMessage, 2000);
+          return;
+        }
+
+        if ("speechSynthesis" in window) {
+          const utterance = new SpeechSynthesisUtterance(text);
+          // Attempt to set a voice matching the target language
+          utterance.lang = targetLang;
+          utterance.rate = 1.0;
+
+          // Stop any current speaking and start the new one
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(utterance);
+
+          setStatusMessage(`Speaking translation in ${targetLang}...`, "info");
+          utterance.onend = () => hideStatusMessage();
+        } else {
+          setStatusMessage(
+            "Text-to-Speech is not supported by your browser.",
+            "error"
+          );
+        }
+      }
+
+      // --- 4. LOCAL STORAGE AND RECENTS ---
+
+      /**
+       * Saves a recent translation to localStorage.
+       * @param {string} sourceText - Original text.
+       * @param {string} targetText - Translated text.
+       * @param {string} sourceLang - Source language code.
+       * @param {string} targetLang - Target language code.
+       * @param {boolean} isFallback - True if translation came from fallback.
+       */
+      function saveRecentTranslation(
+        sourceText,
+        targetText,
+        sourceLang,
+        targetLang,
+        isFallback = false
+      ) {
+        try {
+          const recents = JSON.parse(
+            localStorage.getItem(LOCAL_STORAGE_KEY) || "[]"
+          );
+          const newEntry = {
+            sourceText,
+            targetText,
+            sourceLang,
+            targetLang,
+            timestamp: Date.now(),
+            isFallback,
+          };
+
+          // Add to the front, limit to 5 entries
+          recents.unshift(newEntry);
+          const uniqueRecents = Array.from(new Set(recents.map(JSON.stringify)))
+            .slice(0, 5)
+            .map(JSON.parse);
+
+          localStorage.setItem(
+            LOCAL_STORAGE_KEY,
+            JSON.stringify(uniqueRecents)
+          );
+          renderRecentTranslations(uniqueRecents);
+        } catch (e) {
+          console.error("Error saving to localStorage:", e);
+        }
+      }
+
+      /**
+       * Loads and renders recent translations from localStorage.
+       * @param {Array<Object>} recents - Optional array of recent translations.
+       */
+      function loadRecentTranslations() {
+        try {
+          const recents = JSON.parse(
+            localStorage.getItem(LOCAL_STORAGE_KEY) || "[]"
+          );
+          renderRecentTranslations(recents);
+        } catch (e) {
+          console.error("Error loading from localStorage:", e);
+          localStorage.removeItem(LOCAL_STORAGE_KEY);
+        }
+      }
+
+      /**
+       * Renders the list of recent translations.
+       * @param {Array<Object>} recents - The array of translation history objects.
+       */
+      function renderRecentTranslations(recents) {
+        elements.recentTranslations.innerHTML = "";
+
+        if (recents.length === 0) {
+          elements.recentTranslations.innerHTML =
+            '<p class="text-gray-500 text-sm italic">No recent translations found.</p>';
+          return;
+        }
+
+        recents.forEach((entry) => {
+          const sourceLangName =
+            LANGUAGES.find((l) => l.code === entry.sourceLang)?.name ||
+            entry.sourceLang;
+          const targetLangName =
+            LANGUAGES.find((l) => l.code === entry.targetLang)?.name ||
+            entry.targetLang;
+
+          const statusTag = entry.isFallback
+            ? `<span class="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded-full font-medium">Offline Fallback</span>`
+            : `<span class="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full font-medium">API</span>`;
+
+          const entryHtml = `
+                    <div class="p-3 bg-gray-50 hover:bg-gray-100 rounded-lg border border-gray-200 cursor-pointer transition"
+                        data-source="${entry.sourceText}" data-s-lang="${
+            entry.sourceLang
+          }" data-t-lang="${entry.targetLang}">
+                        <div class="flex justify-between items-center mb-1">
+                            <p class="text-sm font-semibold text-gray-800">
+                                ${sourceLangName} (${entry.sourceLang.toUpperCase()})
+                                <svg class="w-3 h-3 inline mx-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"></path></svg>
+                                ${targetLangName} (${entry.targetLang.toUpperCase()})
+                            </p>
+                            ${statusTag}
+                        </div>
+                        <p class="text-sm text-gray-700 font-light italic truncate">Source: "${
+                          entry.sourceText
+                        }"</p>
+                        <p class="text-sm text-gray-900 font-medium truncate">Result: "${
+                          entry.targetText
+                        }"</p>
+                    </div>
+                `;
+          elements.recentTranslations.insertAdjacentHTML(
+            "beforeend",
+            entryHtml
+          );
+        });
+
+        // Add click listener to recent items
+        elements.recentTranslations
+          .querySelectorAll("div[data-source]")
+          .forEach((item) => {
+            item.addEventListener("click", function () {
+              elements.sourceText.value = this.getAttribute("data-source");
+              elements.sourceLang.value = this.getAttribute("data-s-lang");
+              elements.targetLang.value = this.getAttribute("data-t-lang");
+              elements.targetText.value = ""; // Clear target to prepare for fresh translation
+              setStatusMessage(
+                "Loaded from history. Press Translate to confirm.",
+                "info"
+              );
+              setTimeout(hideStatusMessage, 2000);
+            });
+          });
+      }
+
+      // --- 5. EVENT LISTENERS AND MAIN EXECUTION ---
+
+      window.onload = function () {
+        populateLanguageSelectors();
+        loadRecentTranslations();
+
+        // Main Translate Button
+        elements.translateBtn.addEventListener("click", getTranslation);
+
+        // Swap Languages Button
+        elements.swapBtn.addEventListener("click", swapLanguages);
+
+        // Copy Button
+        elements.copyBtn.addEventListener("click", copyToClipboard);
+
+        // Speak Button
+        elements.speakBtn.addEventListener("click", speakTranslation);
+
+        // Trigger translation on Enter key in the source box (optional)
+        elements.sourceText.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            getTranslation();
+          }
+        });
+      };
+    </script>
+  </body>
+</html>
+
