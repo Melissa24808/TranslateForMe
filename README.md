@@ -2,7 +2,11 @@ TranslateForMe 🌍
 A simple translation app that lets you translate text between different languages, with text-to-speech and translation history.
 README
 
+WEBSITE URL: https://www.melissaisimbi.tech/
+
 DEMONSTRATION VIDEO:
+
+https://drive.google.com/file/d/17zK1HnGjLDvvy5W7e6nz-VzgSTGzCGUO/view?usp=sharing
 
 
 
